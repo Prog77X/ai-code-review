@@ -379,6 +379,8 @@ ai-code-review/
 
 成功处理 Webhook 时，你会看到类似以下日志：
 
+![docker-logs](https://prog77x.github.io/ai-code-review/docs/images/docker-logs.png)
+
 ```
 [WebhookController] Received GitLab webhook: merge_request
 [WebhookService] Processing MR: 1 in your-project
