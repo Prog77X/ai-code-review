@@ -131,8 +131,19 @@ export class AstService {
    * 解析代码为 AST
    */
   private parseCode(code: string, extension: string): any {
-    const plugins: string[] = ['typescript', 'jsx', 'decorators-legacy', 'classProperties'];
+    // 基础插件列表
+    const plugins: string[] = [
+      'typescript',
+      'decorators-legacy',
+      'classProperties',
+      'objectRestSpread',
+      'optionalChaining',
+      'nullishCoalescingOperator',
+      'topLevelAwait',
+      'dynamicImport',
+    ];
 
+    // 根据文件类型添加特定插件
     if (extension === 'tsx' || extension === 'jsx') {
       plugins.push('jsx');
     }
@@ -150,14 +161,35 @@ export class AstService {
         allowReturnOutsideFunction: true,
         allowAwaitOutsideFunction: true,
         errorRecovery: true, // 启用错误恢复
+        tokens: false, // 不生成 tokens，提高性能
       });
     } catch (error: any) {
-      // 对于解析错误，静默处理（已经在 extractCodeBlocks 中有降级方案）
-      // 只在调试模式下记录详细信息
-      if (process.env.NODE_ENV === 'development') {
-        this.logger.debug(`AST parse error for ${extension} file: ${error.message}`);
+      // 对于解析错误，尝试使用更宽松的配置
+      try {
+        // 如果第一次解析失败，尝试使用更基础的插件配置
+        const fallbackPlugins = extension === 'tsx' || extension === 'jsx' 
+          ? ['typescript', 'jsx']
+          : ['typescript'];
+        
+        return parser.parse(code, {
+          sourceType: 'unambiguous', // 尝试自动检测模块类型
+          plugins: fallbackPlugins as any,
+          allowReturnOutsideFunction: true,
+          allowAwaitOutsideFunction: true,
+          errorRecovery: true,
+          tokens: false,
+        });
+      } catch (fallbackError: any) {
+        // 如果降级解析也失败，记录错误并返回 null
+        // 只在调试模式下记录详细信息
+        if (process.env.NODE_ENV === 'development') {
+          this.logger.debug(
+            `AST parse error for ${extension} file: ${error.message}` +
+            (fallbackError.message !== error.message ? ` (fallback also failed: ${fallbackError.message})` : ''),
+          );
+        }
+        return null;
       }
-      return null;
     }
   }
 
