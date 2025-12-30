@@ -32,11 +32,11 @@ export class AstService {
   /**
    * 从 diff 中提取代码块（最小包含块原则）
    */
-  extractCodeBlocks(
+  async extractCodeBlocks(
     diffLines: DiffLine[],
     filePath: string,
     config: AppConfig,
-  ): CodeBlock[] {
+  ): Promise<CodeBlock[]> {
     const addedLines = diffLines.filter(line => line.type === 'added');
     if (addedLines.length === 0) {
       return [];
@@ -50,7 +50,7 @@ export class AstService {
     try {
       // Vue 文件特殊处理
       if (fileExtension === 'vue') {
-        return this.extractVueCodeBlocks(diffLines, filePath, addedLines, config);
+        return await this.extractVueCodeBlocks(diffLines, filePath, addedLines, config);
       }
 
       // 构建完整代码（用于 AST 解析）
@@ -59,14 +59,14 @@ export class AstService {
         return [];
       }
 
-      // 解析 AST
-      const ast = this.parseCode(fullCode, fileExtension);
+      // 解析 AST（带超时保护）
+      const ast = await this.parseCodeWithTimeout(fullCode, fileExtension, config);
       if (!ast) {
         return [];
       }
 
       // 提取包含新增行的最小代码块
-      const codeBlocks = this.extractMinimalBlocks(
+      const codeBlocks = await this.extractMinimalBlocks(
         ast,
         addedLines,
         fullCode,
@@ -125,6 +125,45 @@ export class AstService {
     
     const code = lines.join('\n').trim();
     return code || null;
+  }
+
+  /**
+   * 带超时保护的 AST 解析
+   */
+  private async parseCodeWithTimeout(
+    code: string,
+    extension: string,
+    config: AppConfig,
+  ): Promise<any> {
+    return this.withTimeout(
+      () => this.parseCode(code, extension),
+      config.ast.timeoutMs,
+      `AST解析超时 (>${config.ast.timeoutMs}ms)`,
+    );
+  }
+
+  /**
+   * 超时保护包装器
+   */
+  private async withTimeout<T>(
+    fn: () => T,
+    timeoutMs: number,
+    errorMessage: string,
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(errorMessage));
+      }, timeoutMs);
+
+      try {
+        const result = fn();
+        clearTimeout(timer);
+        resolve(result);
+      } catch (error) {
+        clearTimeout(timer);
+        reject(error);
+      }
+    });
   }
 
   /**
@@ -196,164 +235,370 @@ export class AstService {
   /**
    * 提取最小包含块
    */
-  private extractMinimalBlocks(
+  private async extractMinimalBlocks(
     ast: any,
     addedLines: DiffLine[],
     fullCode: string,
     config: AppConfig,
-  ): CodeBlock[] {
-    const codeBlocks: CodeBlock[] = [];
+  ): Promise<CodeBlock[]> {
     const addedLineNumbers = new Set(
       addedLines.map(line => line.newLineNumber).filter(Boolean) as number[],
     );
 
-    // 存储每个函数/类的行号范围
-    const blockRanges: Array<{
-      start: number;
-      end: number;
-      type: 'function' | 'class' | 'method';
-      name?: string;
-    }> = [];
+    // 收集所有包含新增行的代码块
+    const allSections = this.collectImpactedSections(
+      ast,
+      fullCode,
+      addedLineNumbers,
+      config,
+    );
 
-    // 辅助函数：检查范围是否包含新增行
-    const containsAddedLines = (start: number, end: number): boolean => {
-      for (const lineNum of addedLineNumbers) {
-        if (lineNum >= start && lineNum <= end) {
-          return true;
-        }
-      }
-      return false;
-    };
+    // 选择最小的包含块（核心优化：避免返回外层大函数）
+    const selectedSections = this.selectSmallestSections(allSections, addedLineNumbers);
 
-    // 遍历 AST，找到包含新增行的最小块
-    traverse(ast, {
-      FunctionDeclaration(path: any) {
-        const { start, end } = path.node.loc || {};
-        if (start && end) {
-          const startLine = start.line;
-          const endLine = end.line;
-          if (containsAddedLines(startLine, endLine)) {
-            blockRanges.push({
-              start: startLine,
-              end: endLine,
-              type: 'function',
-              name: path.node.id?.name,
-            });
-          }
-        }
-      },
-      FunctionExpression(path: any) {
-        const { start, end } = path.node.loc || {};
-        if (start && end) {
-          const startLine = start.line;
-          const endLine = end.line;
-          if (containsAddedLines(startLine, endLine)) {
-            blockRanges.push({
-              start: startLine,
-              end: endLine,
-              type: 'function',
-              name: path.node.id?.name || 'anonymous',
-            });
-          }
-        }
-      },
-      ArrowFunctionExpression(path: any) {
-        const { start, end } = path.node.loc || {};
-        if (start && end) {
-          const startLine = start.line;
-          const endLine = end.line;
-          if (containsAddedLines(startLine, endLine)) {
-            blockRanges.push({
-              start: startLine,
-              end: endLine,
-              type: 'function',
-              name: 'arrow',
-            });
-          }
-        }
-      },
-      ClassDeclaration(path: any) {
-        const { start, end } = path.node.loc || {};
-        if (start && end) {
-          const startLine = start.line;
-          const endLine = end.line;
-          if (containsAddedLines(startLine, endLine)) {
-            blockRanges.push({
-              start: startLine,
-              end: endLine,
-              type: 'class',
-              name: path.node.id?.name,
-            });
-          }
-        }
-      },
-      ClassMethod(path: any) {
-        const { start, end } = path.node.loc || {};
-        if (start && end) {
-          const startLine = start.line;
-          const endLine = end.line;
-          if (containsAddedLines(startLine, endLine)) {
-            blockRanges.push({
-              start: startLine,
-              end: endLine,
-              type: 'method',
-              name: path.node.key?.name || 'anonymous',
-            });
-          }
-        }
-      },
-    });
-
-    // 提取代码块内容
-    const codeLines = fullCode.split('\n');
-    for (const range of blockRanges) {
-      const code = codeLines.slice(range.start - 1, range.end).join('\n');
-      
-      // 检查限制
-      if (code.length > config.ast.maxChars) {
-        continue;
-      }
-      if (range.end - range.start + 1 > config.ast.maxLines) {
-        continue;
-      }
-
-      codeBlocks.push({
-        code,
-        startLine: range.start,
-        endLine: range.end,
-        type: range.type,
-        name: range.name,
-      });
-    }
+    // 应用大小限制和截断
+    const codeBlocks: CodeBlock[] = selectedSections
+      .map(section => this.limitSectionSize(section, fullCode, config))
+      .filter((block): block is CodeBlock => block !== null);
 
     return codeBlocks;
   }
 
   /**
-   * 检查范围是否包含新增行
+   * 收集所有包含新增行的代码块
    */
-  private containsAddedLines(
-    start: number,
-    end: number,
+  private collectImpactedSections(
+    ast: any,
+    fullCode: string,
     addedLineNumbers: Set<number>,
-  ): boolean {
-    for (const lineNum of addedLineNumbers) {
-      if (lineNum >= start && lineNum <= end) {
-        return true;
+    config: AppConfig,
+  ): Array<{
+    start: number;
+    end: number;
+    type: 'function' | 'class' | 'method';
+    name?: string;
+    addedLines: number[];
+  }> {
+    const sections: Array<{
+      start: number;
+      end: number;
+      type: 'function' | 'class' | 'method';
+      name?: string;
+      addedLines: number[];
+    }> = [];
+
+    const depthLimiter = this.createDepthLimiter(config.ast.maxDepth);
+
+    // 辅助函数：检查范围是否包含新增行
+    const containsAddedLines = (start: number, end: number): number[] => {
+      const relevantLines: number[] = [];
+      for (const lineNum of addedLineNumbers) {
+        if (lineNum >= start && lineNum <= end) {
+          relevantLines.push(lineNum);
+        }
+      }
+      return relevantLines;
+    };
+
+    // 检查是否是目标节点（函数、类、方法）
+    const isTargetNode = (path: any): boolean => {
+      const nodeType = path.node.type;
+      return [
+        'FunctionDeclaration',
+        'FunctionExpression',
+        'ArrowFunctionExpression',
+        'ClassDeclaration',
+        'ClassMethod',
+        'ClassProperty',
+      ].includes(nodeType);
+    };
+
+    const self = this; // 保存 this 引用
+    try {
+      // 遍历 AST，找到包含新增行的最小块
+      traverse(ast, {
+        enter(astPath: any) {
+          depthLimiter.enter();
+
+          const node = astPath.node;
+
+          // 只关注函数和类声明（避免提取容器节点）
+          if (!isTargetNode(astPath)) {
+            return;
+          }
+
+          // 检查节点是否有位置信息
+          if (!node.loc || !node.loc.start || !node.loc.end) {
+            return;
+          }
+
+          const { start, end } = node.loc;
+          const startLine = start.line;
+          const endLine = end.line;
+
+          // 检查是否包含新增行
+          const relevantLines = containsAddedLines(startLine, endLine);
+          if (relevantLines.length === 0) {
+            return;
+          }
+
+          // 获取节点名称和类型
+          const name = self.getNodeName(node, astPath);
+          const type = self.getNodeType(node.type);
+
+          sections.push({
+            start: startLine,
+            end: endLine,
+            type,
+            name,
+            addedLines: relevantLines,
+          });
+        },
+        exit() {
+          depthLimiter.exit();
+        },
+      });
+    } catch (error: any) {
+      // 如果是深度限制错误，记录警告但继续
+      if (error.message && error.message.includes('深度超限')) {
+        this.logger.warn(`⚠️  ${error.message}, 已收集 ${sections.length} 个代码块`);
+      } else {
+        throw error;
       }
     }
-    return false;
+
+    return sections;
   }
+
+  /**
+   * 创建递归深度限制器
+   */
+  private createDepthLimiter(maxDepth: number) {
+    let currentDepth = 0;
+
+    return {
+      enter() {
+        currentDepth++;
+        if (currentDepth > maxDepth) {
+          throw new Error(`AST 遍历深度超限 (${currentDepth} > ${maxDepth})`);
+        }
+      },
+      exit() {
+        currentDepth--;
+      },
+    };
+  }
+
+  /**
+   * 获取节点名称
+   */
+  private getNodeName(node: any, astPath: any): string | undefined {
+    // 直接命名
+    if (node.id && node.id.name) {
+      return node.id.name;
+    }
+
+    // 变量声明的函数
+    if (astPath.parentPath && astPath.parentPath.isVariableDeclarator()) {
+      const declarator = astPath.parentPath.node;
+      if (declarator.id && declarator.id.name) {
+        return declarator.id.name;
+      }
+    }
+
+    // 对象方法/属性
+    if (node.key) {
+      return node.key.name || node.key.value || 'anonymous';
+    }
+
+    return 'anonymous';
+  }
+
+  /**
+   * 获取节点类型
+   */
+  private getNodeType(nodeType: string): 'function' | 'class' | 'method' {
+    if (nodeType === 'ClassDeclaration') {
+      return 'class';
+    }
+    if (nodeType === 'ClassMethod' || nodeType === 'ClassProperty') {
+      return 'method';
+    }
+    return 'function';
+  }
+
+  /**
+   * 选择最小的包含块（核心优化：避免返回外层大函数）
+   * 
+   * 策略：
+   * 1. 如果多个块包含相同的新增行，选择最小的块
+   * 2. 如果块之间有包含关系，只保留最内层的块
+   */
+  private selectSmallestSections(
+    sections: Array<{
+      start: number;
+      end: number;
+      type: 'function' | 'class' | 'method';
+      name?: string;
+      addedLines: number[];
+    }>,
+    addedLineNumbers: Set<number>,
+  ): Array<{
+    start: number;
+    end: number;
+    type: 'function' | 'class' | 'method';
+    name?: string;
+    addedLines: number[];
+  }> {
+    if (sections.length === 0) {
+      return [];
+    }
+
+    // 按大小排序（从小到大）
+    const sortedSections = [...sections].sort((a, b) => {
+      const sizeA = a.end - a.start;
+      const sizeB = b.end - b.start;
+      return sizeA - sizeB;
+    });
+
+    const selected: Array<{
+      start: number;
+      end: number;
+      type: 'function' | 'class' | 'method';
+      name?: string;
+      addedLines: number[];
+    }> = [];
+    const coveredLines = new Set<number>();
+
+    // 选择最小的块，优先覆盖未覆盖的新增行
+    for (const section of sortedSections) {
+      // 检查这个块是否覆盖了新的行
+      const hasNewLines = section.addedLines.some(line => !coveredLines.has(line));
+
+      if (hasNewLines) {
+        // 检查是否被已选择的更小的块完全包含
+        const isContained = selected.some(
+          selectedSection =>
+            selectedSection.start <= section.start &&
+            selectedSection.end >= section.end &&
+            selectedSection !== section,
+        );
+
+        if (!isContained) {
+          selected.push(section);
+          section.addedLines.forEach(line => coveredLines.add(line));
+        }
+      }
+    }
+
+    return selected;
+  }
+
+  /**
+   * 限制代码块大小，超过限制则截断
+   */
+  private limitSectionSize(
+    section: {
+      start: number;
+      end: number;
+      type: 'function' | 'class' | 'method';
+      name?: string;
+      addedLines: number[];
+    },
+    fullCode: string,
+    config: AppConfig,
+  ): CodeBlock | null {
+    const codeLines = fullCode.split('\n');
+    const snippet = codeLines.slice(section.start - 1, section.end).join('\n');
+    const size = section.end - section.start + 1;
+
+    // 情况1: 字符数超限 - 截断到最大字符数
+    if (snippet.length > config.ast.maxChars) {
+      const truncated = snippet.substring(0, config.ast.maxChars);
+      return {
+        code: truncated + `\n\n/* ... 代码过长已截断 (总长${snippet.length}字符) */`,
+        startLine: section.start,
+        endLine: section.end,
+        type: section.type,
+        name: section.name,
+      };
+    }
+
+    // 情况2: 行数超限 - 只显示新增行周围的上下文
+    if (size > config.ast.maxLines) {
+      const CONTEXT_RADIUS = 8; // 固定上下文行数
+      const contextSnippet = this.extractContextAroundLines(
+        codeLines,
+        section.addedLines,
+        section.start,
+        section.end,
+        CONTEXT_RADIUS,
+      );
+
+      return {
+        code: contextSnippet + `\n\n/* ... 函数较大(${size}行)，只显示新增行周围${CONTEXT_RADIUS}行上下文 */`,
+        startLine: section.start,
+        endLine: section.end,
+        type: section.type,
+        name: section.name,
+      };
+    }
+
+    // 情况3: 正常大小
+    return {
+      code: snippet,
+      startLine: section.start,
+      endLine: section.end,
+      type: section.type,
+      name: section.name,
+    };
+  }
+
+  /**
+   * 提取新增行周围的上下文代码
+   */
+  private extractContextAroundLines(
+    codeLines: string[],
+    addedLines: number[],
+    startLine: number,
+    endLine: number,
+    contextRadius: number,
+  ): string {
+    if (addedLines.length === 0) {
+      return codeLines.slice(startLine - 1, endLine).join('\n');
+    }
+
+    const minAddedLine = Math.min(...addedLines);
+    const maxAddedLine = Math.max(...addedLines);
+
+    const contextStart = Math.max(startLine, minAddedLine - contextRadius);
+    const contextEnd = Math.min(endLine, maxAddedLine + contextRadius);
+
+    const context = codeLines.slice(contextStart - 1, contextEnd);
+    
+    // 如果上下文不是从函数开始，添加省略标记
+    if (contextStart > startLine) {
+      context.unshift('/* ... 前面的代码 ... */');
+    }
+    
+    // 如果上下文不是到函数结束，添加省略标记
+    if (contextEnd < endLine) {
+      context.push('/* ... 后面的代码 ... */');
+    }
+
+    return context.join('\n');
+  }
+
 
   /**
    * 提取 Vue 文件的代码块（仅分析 Script 部分）
    */
-  private extractVueCodeBlocks(
+  private async extractVueCodeBlocks(
     diffLines: DiffLine[],
     filePath: string,
     addedLines: DiffLine[],
     config: AppConfig,
-  ): CodeBlock[] {
+  ): Promise<CodeBlock[]> {
     const compiler = loadVueSfcCompiler();
     if (!compiler) {
       this.logger.debug('@vue/compiler-sfc not available, using fallback for Vue file');

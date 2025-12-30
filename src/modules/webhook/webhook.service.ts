@@ -196,7 +196,7 @@ export class WebhookService {
 
       // 2. AST 分析（提取代码块）
       this.logger.debug(`Extracting code blocks for ${fileChange.newPath}`);
-      const codeBlocks = this.astService.extractCodeBlocks(
+      const codeBlocks = await this.astService.extractCodeBlocks(
         extendedDiff.diffLines,
         fileChange.newPath,
         config,
