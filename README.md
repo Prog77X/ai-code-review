@@ -16,7 +16,7 @@
 - ✅ 接收 GitLab/GitHub Webhook 事件（支持 Merge Request 和 Push 事件）
 - ✅ 自动分析 Merge Request/Push 中的代码变更
 - ✅ 使用 AI 模型进行代码评审（支持 DeepSeek、OpenAI 等）
-- ✅ 支持行级评论和完整报告两种模式
+- ✅ 支持评论和报告两种模式
 - ✅ AST 智能分析，提取最小代码块（最小包含块原则）
 - ✅ Token 管理和限制
 - ✅ 企业微信通知集成
@@ -197,15 +197,18 @@ GitLab Access Token 需要以下权限：
 
 ## 🎯 评审模式
 
-### Comment 模式（行级评论）
+### Comment 模式
 
 在每个问题对应的代码行上添加评论，包含：
 - 问题标题和严重性
 - 详细问题描述
 - 改进建议
 - 相关代码片段
+注：
+- MR/PR 可以使用 discussions API 实现行级评论
+- Commit 由于 API 限制，只能发布提交级评论，但评论内容中包含文件路径和行号
 
-### Report 模式（完整报告）
+### Report 模式
 
 生成完整的问题清单表格，包含：
 - 问题统计（按严重性分类：Critical、Warning、Info）

@@ -354,7 +354,15 @@ MR: #${mrInfo.mrId} ${mrInfo.mrUrl}
   }
 
   /**
-   * 发布 Push 行级评论
+   * 发布 Push 评论（Comment 模式）
+   * 
+   * 注意：
+   * - GitLab: Commit API 不支持行级评论，每个 issue 会发布一条提交级评论（评论内容中包含位置信息）
+   * - GitHub: 如果提供了 line 和 filePath，会发布行级评论；否则发布提交级评论
+   * 
+   * 与 MR/PR 的区别：
+   * - MR/PR 可以使用 discussions API 实现真正的行级评论
+   * - Commit 由于 API 限制，只能发布提交级评论，但评论内容中包含文件路径和行号
    */
   private async publishPushComments(
     mrInfo: MergeRequestInfo,
