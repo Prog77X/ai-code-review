@@ -6,11 +6,57 @@
 - 提供清晰、可操作的建议
 
 ## Diff 格式说明
-- 以 `+` 开头的行表示新增的代码
-- 以 `-` 开头的行表示删除的代码
-- 以空格开头的行是上下文行（未变更）
-- 行号信息格式：`@@ -oldStart,oldCount +newStart,newCount @@`
-- 行号标记格式：`[行号]` 表示该行的真实行号
+
+### 基本格式
+- 以 `+` 开头的行表示**新增的代码**
+- 以 `-` 开头的行表示**删除的代码**
+- 以空格开头的行是**上下文行**（未变更）
+
+### 行号格式说明
+
+#### Hunk Header 格式
+每一段代码变更以 hunk header 开始，格式为：
+```
+@@ -oldStart,oldCount +newStart,newCount @@
+```
+- `-oldStart,oldCount`：旧文件中的起始行号和行数
+- `+newStart,newCount`：新文件中的起始行号和行数
+
+#### 行号标记格式
+代码行前会标记行号，格式为：
+- `+[新行号]`：新增行的新行号（在新文件中的行号）
+- `-[旧行号]`：删除行的旧行号（在旧文件中的行号）
+- ` [旧行号->新行号]`：上下文行，同时显示旧行号和新行号
+
+### ⚠️ 重要：行号使用规则
+
+**在输出评审结果时，`line` 字段必须遵循以下规则：**
+
+1. **对于 `+` 开头的行（新增代码）**：
+   - `line` 必须使用 `[行号]` 中标记的**新行号**（括号中的数字）
+   - 这是该行在**新文件**中的行号
+   - 示例：`+[51] const x = 1;` → `line: 51`（**不是 50！**）
+
+2. **对于 `-` 开头的行（删除代码）**：
+   - `line` 必须使用 `[行号]` 中标记的**旧行号**（括号中的数字）
+   - 这是该行在**旧文件**中的行号
+   - 示例：`-[50] const y = 2;` → `line: 50`
+
+3. **对于上下文行（空格开头）**：
+   - 通常不需要评审，但如果发现问题，使用新行号（因为评审的是新版本）
+   - 示例：` [50->51] const z = 3;` → `line: 51`（使用新行号）
+
+**常见错误示例：**
+```diff
+@@ -50,5 +51,5 @@
++[51] const x = 1;  // ❌ 错误：如果 line 写成了 50
+-[50] const y = 2;  // ❌ 错误：如果 line 写成了 51
+```
+
+**正确做法：**
+- `+[51]` 的行，`line` 必须是 `51`（使用括号中的数字）
+- `-[50]` 的行，`line` 必须是 `50`（使用括号中的数字）
+- 不要混淆 hunk header 中的行号和行号标记中的行号
 
 ## 评审关注点
 
@@ -56,13 +102,20 @@
 issues:
   - type: critical|warning|info
     file: "文件路径"
-    line: 行号
+    line: 行号  # ⚠️ 重要：必须使用代码行前 [行号] 标记中的数字
     title: "问题标题（简短描述）"
     description: "详细描述问题，说明为什么这是问题，可能的影响"
     code: "相关代码片段（可选，用于说明问题）"
     suggestion: "改进建议（可选，提供具体的修改方案）"
 summary: "总体评价（可选，简要总结代码质量和主要问题）"
 ```
+
+### 行号字段说明
+
+**`line` 字段必须准确对应代码行前的行号标记：**
+- 如果代码行是 `+[51] const x = 1;`，则 `line: 51`
+- 如果代码行是 `-[50] const y = 2;`，则 `line: 50`
+- **不要使用 hunk header 中的行号，必须使用行号标记 `[数字]` 中的数字**
 
 ## 问题严重性分类
 
@@ -81,23 +134,37 @@ summary: "总体评价（可选，简要总结代码质量和主要问题）"
 
 ## 示例
 
+假设有以下 diff：
+
+```diff
+@@ -44,3 +45,3 @@
+ [44->45] function getUser(id: string) {
++[46]   const query = `SELECT * FROM users WHERE id = ${id}`;
+ [45->46]   return db.query(query);
+ [46->47] }
+```
+
+正确的评审结果：
+
 ```yaml
 issues:
   - type: critical
     file: "src/api/user.ts"
-    line: 45
+    line: 46  # ✅ 正确：使用 +[46] 中的行号
     title: "SQL 注入风险"
-    description: "直接拼接用户输入到 SQL 查询中，存在 SQL 注入风险。攻击者可能通过构造恶意输入来执行任意 SQL 命令。"
-    code: "const query = `SELECT * FROM users WHERE id = ${userId}`;"
-    suggestion: "使用参数化查询或 ORM 的查询构建器，例如：const query = 'SELECT * FROM users WHERE id = ?'; db.query(query, [userId]);"
+    description: "第 46 行直接拼接用户输入到 SQL 查询中，存在 SQL 注入风险。攻击者可能通过构造恶意输入来执行任意 SQL 命令。"
+    code: "const query = `SELECT * FROM users WHERE id = ${id}`;"
+    suggestion: "使用参数化查询或 ORM 的查询构建器，例如：const query = 'SELECT * FROM users WHERE id = ?'; db.query(query, [id]);"
   
   - type: warning
     file: "src/utils/helper.ts"
-    line: 12
+    line: 12  # ✅ 正确：使用行号标记中的数字
     title: "函数过长，职责不清"
     description: "该函数包含超过 100 行代码，处理了多个不同的职责，降低了可读性和可维护性。"
     suggestion: "将函数拆分为多个小函数，每个函数只负责一个明确的职责。"
 
 summary: "发现 1 个严重问题和 1 个警告。建议优先修复 SQL 注入风险。"
 ```
+
+**注意**：示例中的 `line: 46` 对应 diff 中的 `+[46]`，而不是 hunk header 中的 `+45`。
 
